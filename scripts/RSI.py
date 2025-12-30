@@ -28,7 +28,6 @@ PCT           = 40
 COOLDOWN_BARS = 0
 
 DOORSTEP      = 3.0      # 진입: RSI 피크/바닥에서 이만큼 이동 후 진입
-                         # 모드1: ROE 피크에서 이만큼 하락하면 익절
 
 TP_ROE  = [10]           # TP 기준(ROE %)
 SL_ROE  = [15]           # SL 기준(ROE %)

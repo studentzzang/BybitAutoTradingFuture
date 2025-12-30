@@ -1,37 +1,46 @@
-
 import os, time, math, re, glob
 from datetime import datetime, timezone
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple
 
 import numpy as np
 import pandas as pd
 from pybit.unified_trading import HTTP
 
 # ================= 사용자 설정 =================
-OUT_DIR        = r"D:\Projects\AutoCoinAI\test"   # 결과 저장 폴더
+OUT_DIR        = r"D:\Projects\AutoCoinAI\test"
 SYMBOLS        = ["PUMPFUNUSDT"]
-TIMEFRAMES     = ["30","60","120"]                       # Bybit interval: "1","3","5","15","30","60",...,"D","W","M"
+TIMEFRAMES     = ["3","5","30","60"]  # "1","3","5","15","30","60",...,"D","W","M"
 
-EMA_FAST_ARR   = [12,20,50]
-EMA_SLOW_ARR   = [26,50,100]
+# === EMA 1개 시스템 파라미터 그리드 ===
+EMA_PERIOD_ARR       = [100, 200]
 
-TP_ROE_ARR     = [10,12]                    # ROE% 목표
-SL_ROE_ARR     = [10]                    # ROE% 손절
+# 횡보 필터(선택): EMA 기울기 + EMA/가격 거리
+USE_SLOPE_FILTER     = True
+SLOPE_LOOKBACK_ARR   = [8, 10, 12]          # n봉 전 EMA 대비
+SLOPE_THRESH_ARR     = [0.0008, 0.0010]     # |(EMA-EMA[n])/EMA| > thresh
 
-EQUITY         = 100.0                            # 증거금(USDT)
+USE_DIST_FILTER      = True
+DIST_THRESH_ARR      = [0.0010, 0.0015]     # |(C-EMA)/EMA| > thresh
+
+# TP/SL (ROE%)
+TP_ROE_ARR     = [5, 7.5, 10]
+SL_ROE_ARR     = [5, 7.5, 10]
+
+# 백테스트 환경
+EQUITY         = 100.0
 LEVERAGE       = 5
-START          = "2025-03-01"                     # 시작일 (UTC)
-END            = None                              # None이면 현재
+START          = "2025-01-01"   # UTC
+END            = None
 MAX_CANDLES    = 20000
 SLEEP_PER_REQ  = 0.12
 MAX_RETRY      = 3
 
-# 수수료/슬리피지 (요청: 0)
+# 수수료/슬리피지 (bps)
 TAKER_FEE_BPS  = 0.0
 SLIPPAGE_BPS   = 0.0
 
 # ================= Bybit HTTP =================
-session = HTTP() 
+session = HTTP()
 
 def parse_date_ms(s: Optional[str]) -> Optional[int]:
     if not s: return None
@@ -92,7 +101,8 @@ def fetch_ohlcv(symbol: str, tf: str, start_ms: Optional[int], end_ms: Optional[
 
         for it in lst:
             ts = int(it[0])
-            if ts < start_ms: continue
+            if ts < start_ms: 
+                continue
             o = float(it[1]); h = float(it[2]); l = float(it[3]); c = float(it[4]); v = float(it[5])
             rows.append((ts,o,h,l,c,v))
 
@@ -118,26 +128,44 @@ def fetch_ohlcv(symbol: str, tf: str, start_ms: Optional[int], end_ms: Optional[
 def ema(series: pd.Series, period: int) -> pd.Series:
     return series.ewm(span=period, adjust=False).mean()
 
-# ================= 백테스트 =================
-def backtest(symbol: str, tf: str, fast: int, slow: int, tp_roe: float, sl_roe: float,
-             start_ms: Optional[int], end_ms: Optional[int]) -> pd.DataFrame:
-    assert fast < slow
+# ================= 백테스트 (EMA 1개 시스템) =================
+def backtest_ema1(symbol: str, tf: str,
+                  ema_period: int,
+                  slope_lb: Optional[int],
+                  slope_th: Optional[float],
+                  dist_th: Optional[float],
+                  tp_roe: float, sl_roe: float,
+                  start_ms: Optional[int], end_ms: Optional[int]) -> pd.DataFrame:
+
     ohlc = fetch_ohlcv(symbol, tf, start_ms, end_ms, MAX_CANDLES)
     if ohlc.empty:
         return pd.DataFrame(columns=[
-            "datetime","symbol","timeframe","fast","slow","rsi_p","doorstep",
+            "datetime","symbol","timeframe","ema_p","slope_lb","slope_th","dist_th",
             "포지션","비고","entry_price","exit_price","미실현PnL","ROE"
         ])
 
     close = ohlc["close"].astype(float)
-    ohlc["ema_fast"] = ema(close, fast)
-    ohlc["ema_slow"] = ema(close, slow)
+    ohlc["ema"] = ema(close, ema_period)
 
-    # 교차 플래그 (NaN 안전)
-    above = (ohlc["ema_fast"] > ohlc["ema_slow"]).fillna(False)
-    above_prev = above.shift(1).fillna(False)
-    cross_up = (~above_prev) & (above)     # 골든 → LONG 진입
-    cross_dn = (above_prev) & (~above)     # 데드  → SHORT 진입
+    # 필터 계산 (NaN 안전)
+    if USE_SLOPE_FILTER and slope_lb is not None and slope_th is not None:
+        slope_pct = (ohlc["ema"] - ohlc["ema"].shift(slope_lb)) / ohlc["ema"]
+        slope_ok = (slope_pct.abs() > slope_th).fillna(False)
+    else:
+        slope_ok = pd.Series([True]*len(ohlc))
+
+    if USE_DIST_FILTER and dist_th is not None:
+        dist = (close - ohlc["ema"]).abs() / ohlc["ema"]
+        dist_ok = (dist > dist_th).fillna(False)
+    else:
+        dist_ok = pd.Series([True]*len(ohlc))
+
+    # 신호: EMA 위면 롱, 아래면 숏 (동률은 거래 안함)
+    above = (close > ohlc["ema"]).fillna(False)
+    below = (close < ohlc["ema"]).fillna(False)
+
+    # 거래 가능 여부(횡보 필터 통과)
+    tradable = (slope_ok & dist_ok).fillna(False)
 
     position: Optional[str] = None
     entry_px: Optional[float] = None
@@ -147,65 +175,78 @@ def backtest(symbol: str, tf: str, fast: int, slow: int, tp_roe: float, sl_roe: 
     fee = TAKER_FEE_BPS / 10_000.0
     slip = SLIPPAGE_BPS  / 10_000.0
 
-    cols = ["datetime","symbol","timeframe","fast","slow","rsi_p","doorstep",
+    cols = ["datetime","symbol","timeframe","ema_p","slope_lb","slope_th","dist_th",
             "포지션","비고","entry_price","exit_price","미실현PnL","ROE"]
     log_rows: List[List] = []
 
-    start_idx = max(fast, slow) + 1
-    n = len(ohlc)
+    # 워밍업: EMA + slope_lb 고려
+    warm = ema_period + 2
+    if USE_SLOPE_FILTER and slope_lb is not None:
+        warm = max(warm, slope_lb + ema_period + 2)
+    start_idx = min(max(warm, 5), len(ohlc)-1)
 
-    for i in range(start_idx, n):
-        ts = int(ohlc.loc[i,"ts"])
+    for i in range(start_idx, len(ohlc)):
+        ts = int(ohlc.loc[i, "ts"])
         dt = datetime.fromtimestamp(ts//1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        px = float(ohlc.loc[i,"close"])
+        px_close = float(ohlc.loc[i, "close"])
 
-        # 진입
-        if position is None:
-            if bool(cross_up.iloc[i]):
+        can_trade = bool(tradable.iloc[i])
+
+        # === 진입 (종가 기준, 기존 방식 유지) ===
+        if position is None and can_trade:
+            if bool(above.iloc[i]):
                 position = "LONG"
-                entry_px = px * (1 + slip)
+                entry_px = px_close * (1 + slip)
                 qty = notional / entry_px
                 continue
-            elif bool(cross_dn.iloc[i]):
+            elif bool(below.iloc[i]):
                 position = "SHORT"
-                entry_px = px * (1 - slip)
+                entry_px = px_close * (1 - slip)
                 qty = notional / entry_px
                 continue
 
-        # 청산
+        # === 청산 (종가 기준) ===
         if position == "LONG":
-            exit_px = px * (1 - slip)
+            exit_px = px_close * (1 - slip)
             pnl = (exit_px - entry_px) * qty - 2*fee*notional
             roe_pct = (pnl / EQUITY) * 100.0
 
             if roe_pct >= tp_roe:
-                log_rows.append([dt, symbol, tf, fast, slow, 0, 0, "CLOSE", "TP LONG", entry_px, exit_px, pnl, roe_pct])
+                log_rows.append([dt, symbol, tf, ema_period, slope_lb, slope_th, dist_th,
+                                 "CLOSE", "TP LONG", entry_px, exit_px, pnl, roe_pct])
                 position = None; entry_px = None; qty = None
                 continue
             if roe_pct <= -sl_roe:
-                log_rows.append([dt, symbol, tf, fast, slow, 0, 0, "CLOSE", "SL LONG", entry_px, exit_px, pnl, roe_pct])
+                log_rows.append([dt, symbol, tf, ema_period, slope_lb, slope_th, dist_th,
+                                 "CLOSE", "SL LONG", entry_px, exit_px, pnl, roe_pct])
                 position = None; entry_px = None; qty = None
                 continue
-            if bool(cross_dn.iloc[i]):
-                log_rows.append([dt, symbol, tf, fast, slow, 0, 0, "CLOSE", "XC LONG", entry_px, exit_px, pnl, roe_pct])
+            # 반대 신호(EMA 아래로)면 청산
+            if bool(below.iloc[i]):
+                log_rows.append([dt, symbol, tf, ema_period, slope_lb, slope_th, dist_th,
+                                 "CLOSE", "XC LONG", entry_px, exit_px, pnl, roe_pct])
                 position = None; entry_px = None; qty = None
                 continue
 
         elif position == "SHORT":
-            exit_px = px * (1 + slip)
+            exit_px = px_close * (1 + slip)
             pnl = (entry_px - exit_px) * qty - 2*fee*notional
             roe_pct = (pnl / EQUITY) * 100.0
 
             if roe_pct >= tp_roe:
-                log_rows.append([dt, symbol, tf, fast, slow, 0, 0, "CLOSE", "TP SHORT", entry_px, exit_px, pnl, roe_pct])
+                log_rows.append([dt, symbol, tf, ema_period, slope_lb, slope_th, dist_th,
+                                 "CLOSE", "TP SHORT", entry_px, exit_px, pnl, roe_pct])
                 position = None; entry_px = None; qty = None
                 continue
             if roe_pct <= -sl_roe:
-                log_rows.append([dt, symbol, tf, fast, slow, 0, 0, "CLOSE", "SL SHORT", entry_px, exit_px, pnl, roe_pct])
+                log_rows.append([dt, symbol, tf, ema_period, slope_lb, slope_th, dist_th,
+                                 "CLOSE", "SL SHORT", entry_px, exit_px, pnl, roe_pct])
                 position = None; entry_px = None; qty = None
                 continue
-            if bool(cross_up.iloc[i]):
-                log_rows.append([dt, symbol, tf, fast, slow, 0, 0, "CLOSE", "XC SHORT", entry_px, exit_px, pnl, roe_pct])
+            # 반대 신호(EMA 위로)면 청산
+            if bool(above.iloc[i]):
+                log_rows.append([dt, symbol, tf, ema_period, slope_lb, slope_th, dist_th,
+                                 "CLOSE", "XC SHORT", entry_px, exit_px, pnl, roe_pct])
                 position = None; entry_px = None; qty = None
                 continue
 
@@ -213,24 +254,32 @@ def backtest(symbol: str, tf: str, fast: int, slow: int, tp_roe: float, sl_roe: 
 
 # ================= Summary 생성 =================
 def build_summary(out_dir: str):
-    pattern = os.path.join(out_dir, "*_EMA*-*_TP*_*SL*.csv")
+    pattern = os.path.join(out_dir, "*_EMA1_*.csv")
     files = sorted(glob.glob(pattern))
 
     rows = []
+    # 파일명 예시:
+    # PUMPFUNUSDT_30_EMA1_EMA200_SLP10-0.001_DST0.0015_TP7.5_SL10.csv
     fname_re = re.compile(
-        r"^(?P<symbol>[A-Z0-9]+)_(?P<tf>[0-9DWM]+)_EMA(?P<fast>\d+)-(?P<slow>\d+)_TP(?P<tp>[\d\.]+)_SL(?P<sl>[\d\.]+)\.csv$"
+        r"^(?P<symbol>[A-Z0-9]+)_(?P<tf>[0-9DWM]+)_EMA1_"
+        r"EMA(?P<ema>\d+)_"
+        r"SLP(?P<slb>\d+)-(?P<sth>[\d\.]+)_"
+        r"DST(?P<dst>[\d\.]+)_"
+        r"TP(?P<tp>[\d\.]+)_SL(?P<sl>[\d\.]+)\.csv$"
     )
 
     for fpath in files:
         fname = os.path.basename(fpath)
         m = fname_re.match(fname)
-        meta = {"symbol":None,"timeframe":None,"fast":None,"slow":None,"tp":None,"sl":None,"file":fname}
+        meta = {"symbol":None,"timeframe":None,"ema_p":None,"slope_lb":None,"slope_th":None,"dist_th":None,"tp":None,"sl":None,"file":fname}
         if m:
             meta.update({
                 "symbol": m.group("symbol"),
                 "timeframe": m.group("tf"),
-                "fast": int(m.group("fast")),
-                "slow": int(m.group("slow")),
+                "ema_p": int(m.group("ema")),
+                "slope_lb": int(m.group("slb")),
+                "slope_th": float(m.group("sth")),
+                "dist_th": float(m.group("dst")),
                 "tp": float(m.group("tp")),
                 "sl": float(m.group("sl")),
             })
@@ -277,15 +326,16 @@ def build_summary(out_dir: str):
         })
 
     summary_df = pd.DataFrame(rows, columns=[
-        "symbol","timeframe","fast","slow","tp","sl","file",
+        "symbol","timeframe","ema_p","slope_lb","slope_th","dist_th","tp","sl","file",
         "trades","total_pnl_usdt","total_roe_pct","win_rate_pct","min_loss_pnl_usdt","min_roe_pct",
         "first_trade_at","last_trade_at"
     ])
     if not summary_df.empty:
-        summary_df.sort_values(["symbol","timeframe","fast","slow","tp","sl","last_trade_at"], inplace=True)
-    summary_path = os.path.join(out_dir, "summary_EMA.csv")
+        summary_df.sort_values(["symbol","timeframe","ema_p","slope_lb","slope_th","dist_th","tp","sl","last_trade_at"], inplace=True)
+
+    summary_path = os.path.join(out_dir, "summary_EMA1.csv")
     summary_df.to_csv(summary_path, index=False, encoding="utf-8-sig")
-    print(f"[OK] summary_EMA.csv saved -> {summary_path}")
+    print(f"[OK] summary_EMA1.csv saved -> {summary_path}")
 
 # ================= 실행 =================
 if __name__ == "__main__":
@@ -294,25 +344,32 @@ if __name__ == "__main__":
     start_ms = parse_date_ms(START)
     end_ms   = parse_date_ms(END)
 
+    # 필터 파라미터 그리드 구성
+    slope_grid = [(None, None)] if not USE_SLOPE_FILTER else [(lb, th) for lb in SLOPE_LOOKBACK_ARR for th in SLOPE_THRESH_ARR]
+    dist_grid  = [None] if not USE_DIST_FILTER else list(DIST_THRESH_ARR)
+
     for s in SYMBOLS:
         for tf in TIMEFRAMES:
-            for fast in EMA_FAST_ARR:
-                for slow in EMA_SLOW_ARR:
-                    if fast >= slow: 
-                        continue
-                    for tp in TP_ROE_ARR:
-                        for sl in SL_ROE_ARR:
-                            try:
-                                trades_df = backtest(s, tf, fast, slow, tp, sl, start_ms, end_ms)
-                            except Exception as e:
-                                print(f"[SKIP] {s}_{tf}_EMA{fast}-{slow}_TP{tp}_SL{sl}: {e}")
-                                continue
+            for ema_p in EMA_PERIOD_ARR:
+                for (slb, sth) in slope_grid:
+                    for dst in dist_grid:
+                        for tp in TP_ROE_ARR:
+                            for sl in SL_ROE_ARR:
+                                # 파일명 안정화를 위해 None이면 기본 표기값 부여
+                                slb_v = slb if slb is not None else 0
+                                sth_v = sth if sth is not None else 0.0
+                                dst_v = dst if dst is not None else 0.0
 
-                            fname = f"{s}_{tf}_EMA{fast}-{slow}_TP{tp}_SL{sl}.csv"
-                            fpath = os.path.join(OUT_DIR, fname)
-                            trades_df.to_csv(fpath, index=False, encoding="utf-8-sig")
-                            print(f"✅ 저장: {fpath}")
+                                try:
+                                    trades_df = backtest_ema1(s, tf, ema_p, slb, sth, dst, tp, sl, start_ms, end_ms)
+                                except Exception as e:
+                                    print(f"[SKIP] {s}_{tf}_EMA1_EMA{ema_p}_SLP{slb_v}-{sth_v}_DST{dst_v}_TP{tp}_SL{sl}: {e}")
+                                    continue
 
-    # summary 생성
+                                fname = f"{s}_{tf}_EMA1_EMA{ema_p}_SLP{slb_v}-{sth_v}_DST{dst_v}_TP{tp}_SL{sl}.csv"
+                                fpath = os.path.join(OUT_DIR, fname)
+                                trades_df.to_csv(fpath, index=False, encoding="utf-8-sig")
+                                print(f"✅ 저장: {fpath}")
+
     build_summary(OUT_DIR)
     print("✅ 완료")
