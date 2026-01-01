@@ -12,16 +12,16 @@ from pybit.unified_trading import HTTP
 # ====== 사용자 설정 변수 ======
 SYMBOL = ["PUMPFUNUSDT"] 
 LEVERAGE = 5
-TIMEFRAME = ["5", "15", "30"] 
-RSI_PERIOD = [14]
+TIMEFRAME = ["3","5", "15", "30"] 
+RSI_PERIOD = [5,7,9,12]
 EQUITY = 100.0
 START = "2025-01-01"
 END = "2025-12-28"
 OUT_DIR = "test" # 현재 폴더 아래 test 폴더에 저장
 
 ATR_PERIOD_ARR = [9, 14, 20]
-TP_ATR_MULT_ARR = [3.0, 4.5]
-SL_ATR_MULT_ARR = [1.5, 2.0]
+TP_ATR_MULT_ARR = [1.8]
+SL_ATR_MULT_ARR = [5,8]
 
 OPEN_SHORT_RSI = 70.0
 OPEN_LONG_RSI  = 30.0

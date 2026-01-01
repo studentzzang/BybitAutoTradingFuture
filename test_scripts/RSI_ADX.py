@@ -10,37 +10,33 @@ from pybit.unified_trading import HTTP
 # ====== 사용자 설정 변수 ======
 SYMBOL = ["PUMPFUNUSDT"]
 LEVERAGE = 5
-TIMEFRAME = [5, 15, 30]
-RSI_PERIOD = [7, 9, 12]
+TIMEFRAME = [3, 5, 15]
+RSI_PERIOD = [5, 7, 9, 12]
 
-# ✅ ADX 파라미터 (기간, 추세판단 임계값)
-ADX_PERIOD = [7, 10, 14]
-ADX_MIN_ARR = [10, 15, 20]
-
-# ✅ 추세 모드 RSI 눌림/되돌림 트리거 (배열로 경우의 수)
-TREND_LONG_PULLBACK_RSI_ARR  = [35, 42.0, 45.0, 48.0]
-TREND_SHORT_PULLBACK_RSI_ARR = [65, 58.0, 55.0, 52.0]
+# ✅ ADX 파라미터 (기간, "진입 금지" 임계값)
+#   - ADX가 adx_min 이상이면 신규 진입 금지
+ADX_PERIOD = [5, 7, 10, 14]
+ADX_MIN_ARR = [20, 25, 30, 35, 40]
 
 EQUITY = 100.0
 START = "2025-09-01"
 END = "2025-12-28"
 OUT_DIR = "test"
 
-MAX_CANDLES = 15000
+MAX_CANDLES = 40000
 
-# ====== RSI 트리거 값 (횡보/비추세 모드 평균회귀) ======
+# ====== RSI 트리거 값 (평균회귀) ======
 OPEN_SHORT_RSI = 72.0
 OPEN_LONG_RSI = 28.0
 
 # ====== TP / SL 배열 ======
-TP_ROE_ARR = [7, 10]
-SL_ROE_ARR = [10, 12.5]
+TP_ROE_ARR = [1.8]
+SL_ROE_ARR = [7]
 TP_MODE_ARR = [2]
 
 # ✅ 연쇄 손실 방지(핵심)
 MAX_CONSEC_SL_SAME_DIR = 2     # 같은 방향 SL 연속 N회면 차단
 COOLDOWN_BARS = 6              # 차단 후 N봉 동안 진입 금지
-UNBLOCK_ON_DI_FLIP = True      # DI 방향 바뀌면 즉시 차단 해제
 
 session = HTTP()
 
@@ -181,8 +177,6 @@ def run(symbol: str, tf: str,
         rsi_period: int,
         adx_period: int,
         adx_min: float,
-        trend_long_pb: float,
-        trend_short_pb: float,
         leverage: float, equity: float,
         start: Optional[str], end: Optional[str], out_dir: str,
         tp_roe: float, sl_roe: float, tp_mode: int) -> str:
@@ -200,8 +194,7 @@ def run(symbol: str, tf: str,
     cols = [
         "datetime", "symbol", "timeframe",
         "close", "rsi", "adx", "pdi", "mdi",
-        "adx_period", "adx_min",
-        "trend_long_pb", "trend_short_pb",
+        "adx_period", "adx_block_min",
         "block_dir", "cooldown_left",
         "포지션", "비고", "entry_price", "미실현PnL", "ROE"
     ]
@@ -213,12 +206,10 @@ def run(symbol: str, tf: str,
     init_margin = None
 
     # ✅ 연쇄 손실 차단 상태
-    block_dir = None            # "UP" or "DOWN" (DI 기반 추세 방향)
-    consec_sl_up = 0
-    consec_sl_down = 0
+    block_dir = None            # "LONG" or "SHORT"
+    consec_sl_long = 0
+    consec_sl_short = 0
     cooldown_left = 0
-
-    prev_trend_dir = None
 
     for i in range(len(ohlc)):
         ts = int(ohlc.loc[i, "ts"]) // 1000
@@ -243,58 +234,29 @@ def run(symbol: str, tf: str,
         if cooldown_left > 0:
             cooldown_left -= 1
 
-        trend_mode = (ax is not None) and (ax >= adx_min) and (pdi is not None) and (mdi is not None)
-        trend_dir = None
-        if trend_mode:
-            trend_dir = "UP" if (pdi > mdi) else "DOWN"
+        # ✅ ADX 필터: adx_min 이상이면 신규 진입 금지
+        adx_block = (ax is not None) and (ax >= adx_min)
 
-        # ✅ DI 방향이 뒤집히면(추세 전환) 차단 해제 옵션
-        if UNBLOCK_ON_DI_FLIP and trend_dir is not None and prev_trend_dir is not None:
-            if trend_dir != prev_trend_dir:
-                block_dir = None
-                cooldown_left = 0
-                consec_sl_up = 0
-                consec_sl_down = 0
-        if trend_dir is not None:
-            prev_trend_dir = trend_dir
-
-        # ✅ 진입 차단 판단
-        blocked_now = (cooldown_left > 0) or (block_dir is not None and trend_dir == block_dir)
+        # ✅ 진입 차단 판단 (연속SL 차단 + 쿨다운 + ADX 차단)
+        blocked_now = (cooldown_left > 0) or (block_dir is not None) or adx_block
 
         # === 진입 ===
         if position is None and rv is not None and not blocked_now:
-            if trend_mode:
-                if trend_dir == "UP":
-                    if rv <= trend_long_pb:
-                        position = "LONG"
-                        entry_px = px
-                        notional = equity * leverage
-                        qty = notional / entry_px
-                        init_margin = equity
-                        remark = f"LONG 진입 (TREND ADX{ax:.1f} UP, RSI<= {trend_long_pb})"
-                else:
-                    if rv >= trend_short_pb:
-                        position = "SHORT"
-                        entry_px = px
-                        notional = equity * leverage
-                        qty = notional / entry_px
-                        init_margin = equity
-                        remark = f"SHORT 진입 (TREND ADX{ax:.1f} DOWN, RSI>= {trend_short_pb})"
-            else:
-                if rv >= OPEN_SHORT_RSI:
-                    position = "SHORT"
-                    entry_px = px
-                    notional = equity * leverage
-                    qty = notional / entry_px
-                    init_margin = equity
-                    remark = f"SHORT 진입 (MR RSI>= {OPEN_SHORT_RSI})"
-                elif rv <= OPEN_LONG_RSI:
-                    position = "LONG"
-                    entry_px = px
-                    notional = equity * leverage
-                    qty = notional / entry_px
-                    init_margin = equity
-                    remark = f"LONG 진입 (MR RSI<= {OPEN_LONG_RSI})"
+            if rv >= OPEN_SHORT_RSI:
+                position = "SHORT"
+                entry_px = px
+                notional = equity * leverage
+                qty = notional / entry_px
+                init_margin = equity
+                remark = f"SHORT 진입 (RSI>= {OPEN_SHORT_RSI}, ADX<{adx_min})"
+
+            elif rv <= OPEN_LONG_RSI:
+                position = "LONG"
+                entry_px = px
+                notional = equity * leverage
+                qty = notional / entry_px
+                init_margin = equity
+                remark = f"LONG 진입 (RSI<= {OPEN_LONG_RSI}, ADX<{adx_min})"
 
         # === 보유 중 ===
         elif position is not None and rv is not None:
@@ -320,25 +282,25 @@ def run(symbol: str, tf: str,
             if remark.startswith("close"):
                 # ✅ SL이면 연속손실 카운트 누적 + 차단
                 if "(SL" in remark:
-                    loss_dir = "UP" if position == "LONG" else "DOWN"
-                    if loss_dir == "UP":
-                        consec_sl_up += 1
-                        consec_sl_down = 0
-                        if consec_sl_up >= MAX_CONSEC_SL_SAME_DIR:
-                            block_dir = "UP"
+                    loss_dir = "LONG" if position == "LONG" else "SHORT"
+                    if loss_dir == "LONG":
+                        consec_sl_long += 1
+                        consec_sl_short = 0
+                        if consec_sl_long >= MAX_CONSEC_SL_SAME_DIR:
+                            block_dir = "LONG"
                             cooldown_left = COOLDOWN_BARS
                     else:
-                        consec_sl_down += 1
-                        consec_sl_up = 0
-                        if consec_sl_down >= MAX_CONSEC_SL_SAME_DIR:
-                            block_dir = "DOWN"
+                        consec_sl_short += 1
+                        consec_sl_long = 0
+                        if consec_sl_short >= MAX_CONSEC_SL_SAME_DIR:
+                            block_dir = "SHORT"
                             cooldown_left = COOLDOWN_BARS
                 else:
                     # TP면 해당 방향 연속 SL 카운트 리셋
                     if position == "LONG":
-                        consec_sl_up = 0
+                        consec_sl_long = 0
                     else:
-                        consec_sl_down = 0
+                        consec_sl_short = 0
 
                 # 포지션 정리
                 position = None
@@ -352,7 +314,6 @@ def run(symbol: str, tf: str,
                 dt, symbol, tf,
                 px, rv, ax, pdi, mdi,
                 adx_period, adx_min,
-                trend_long_pb, trend_short_pb,
                 block_dir, cooldown_left,
                 ("CLOSE" if "close" in remark else "OPEN"),
                 remark, entry_px if entry_px is not None else np.nan, unreal, roe
@@ -366,8 +327,7 @@ def run(symbol: str, tf: str,
 
     fname = (
         f"{symbol}_{tf}_R{rsi_period}"
-        f"_ADX{adx_period}_MIN{adx_min}"
-        f"_LPB{trend_long_pb}_SPB{trend_short_pb}"
+        f"_ADX{adx_period}_BLOCK{adx_min}"
         f"_TP{tp_roe}_SL{sl_roe}_M{tp_mode}"
         f"_CSL{MAX_CONSEC_SL_SAME_DIR}_CD{COOLDOWN_BARS}.csv"
     )
@@ -377,24 +337,21 @@ def run(symbol: str, tf: str,
 
 # ---------- 실행 ----------
 if __name__ == "__main__":
-    print("--- RSI + ADX(DI) + Trend Pullback + 연속SL차단 백테스팅 시작 ---")
+    print("--- RSI + ADX(진입금지필터) + 연속SL차단 백테스팅 시작 ---")
     for s in _as_list(SYMBOL):
         for tf in _as_list(TIMEFRAME):
             for rp in _as_list(RSI_PERIOD):
                 for ap in _as_list(ADX_PERIOD):
                     for amin in _as_list(ADX_MIN_ARR):
-                        for lpb in _as_list(TREND_LONG_PULLBACK_RSI_ARR):
-                            for spb in _as_list(TREND_SHORT_PULLBACK_RSI_ARR):
-                                for tp in TP_ROE_ARR:
-                                    for sl in SL_ROE_ARR:
-                                        for mode in TP_MODE_ARR:
-                                            csv_path = run(
-                                                s, str(tf),
-                                                rp, ap, amin,
-                                                float(lpb), float(spb),
-                                                LEVERAGE, EQUITY,
-                                                START, END, OUT_DIR,
-                                                tp, sl, mode
-                                            )
-                                            if csv_path:
-                                                print(f"✅ 완료: {os.path.basename(csv_path)}")
+                        for tp in TP_ROE_ARR:
+                            for sl in SL_ROE_ARR:
+                                for mode in TP_MODE_ARR:
+                                    csv_path = run(
+                                        s, str(tf),
+                                        rp, ap, amin,
+                                        LEVERAGE, EQUITY,
+                                        START, END, OUT_DIR,
+                                        tp, sl, mode
+                                    )
+                                    if csv_path:
+                                        print(f"✅ 완료: {os.path.basename(csv_path)}")
