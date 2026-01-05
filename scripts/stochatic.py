@@ -19,14 +19,14 @@ if not _api_key or not _api_secret:
 session = HTTP(api_key=_api_key, api_secret=_api_secret, recv_window=60000, max_retries=0)
 
 SYMBOLS = ["PUMPFUNUSDT"]
-INTERVALS = ["1"]
+INTERVALS = ["15"]
 
-LEVERAGE = "5"
-PCT = 40
+LEVERAGE = "10"
+PCT = 30
 
 MODE = [1]
-TP_ROE = [2.0]
-SL_ROE = [2.0]
+TP_ROE = [3.0]
+SL_ROE = [8.0]
 
 STOCH_PERIOD = [14]
 K_SMOOTH = [3]
@@ -37,7 +37,7 @@ OVERBOUGHT = [80.0]
 STRICT_ZONE = [False]
 
 COOLDOWN_BARS = 0
-SLEEP_SEC = 3
+SLEEP_SEC = 0
 
 bybit.PCT = PCT
 for s in SYMBOLS:
