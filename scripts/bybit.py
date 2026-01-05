@@ -146,15 +146,33 @@ def entry_position(symbol, side, leverage):
         print(f"📛[{datetime.now().strftime('%H:%M:%S')}] {symbol} lotInfo 실패: {e}")
         return None, 0
 
+    # 1) 현재 잔고(USDT)
     avail = get_usdt()
+
+    # 2) 레버리지 *가격 절대 금지 → 그냥 실제 가격만 사용
     price = get_current_price(symbol)
-    raw_qty = (avail * (PCT / 100) * int(leverage)) / price
+
+    # 3) 실제 투자 금액 (pct%)
+    actual_cash = avail * (PCT / 100)
+
+    # 4) 포지션 크기 = (투자금 × 레버리지) / 현재가
+    raw_qty = (actual_cash * float(leverage)) / price
+
+    # 5) 수량 스텝 적용
     adj_qty = quantize_qty(raw_qty, step)
 
+    # 6) 최소 주문 수량 체크
     if adj_qty < min_qty:
         print(f"📛 수량 부족: raw={raw_qty:.8f}, adj={adj_qty:.8f}, min={min_qty}")
         return None, 0
 
+    # 7) 최소 주문 금액(5USDT) 조건 충족 여부 체크
+    order_value = adj_qty * price
+    if order_value < 5:
+        print(f"❌ 주문가치 부족: {order_value:.4f} USDT (최소 5USDT 필요)")
+        return None, 0
+
+    # 8) 주문 실행
     r = session.place_order(
         category="linear",
         symbol=str(symbol).upper(),
@@ -164,12 +182,14 @@ def entry_position(symbol, side, leverage):
         isLeverage=1,
         reduceOnly=False,
     )
+
     if r.get("retCode") != 0:
         print(f"📛 주문 실패: {r.get('retMsg')}")
         return None, 0
 
     print(f"💡 {symbol} {side} 진입 | 수량 {adj_qty} | lev={leverage} | price={price:.6f}")
     return price, adj_qty
+
 
 
 def close_position(symbol, side):
