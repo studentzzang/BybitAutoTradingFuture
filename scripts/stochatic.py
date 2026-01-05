@@ -2,6 +2,7 @@ from dotenv import load_dotenv, find_dotenv
 import os, sys, time
 from datetime import datetime
 from typing import Optional
+import requests
 
 import numpy as np
 import pandas as pd
@@ -49,9 +50,28 @@ qty = {s: None for s in SYMBOLS}
 cooldown = {s: 0 for s in SYMBOLS}
 last_closed_ts = {s: None for s in SYMBOLS}
 
-def get_kline_http(symbol: str, interval: str, limit: int = 200):
-    r = session.get_kline(category="linear", symbol=str(symbol).upper(), interval=str(interval), limit=int(limit))
-    return r["result"]["list"][::-1]
+def get_kline_http(symbol: str, interval: str, limit: int = 200, category: str = "linear"):
+    symbol = str(symbol).upper().strip()
+    interval = str(interval).strip()
+
+    params = {
+        "category": category,
+        "symbol": symbol,
+        "interval": interval,
+        "limit": int(limit),
+    }
+
+    r = requests.get("https://api.bybit.com/v5/market/kline", params=params, timeout=10)
+    j = r.json()
+
+    if j.get("retCode", 0) != 0:
+        raise RuntimeError(f"get_kline failed: retCode={j.get('retCode')} retMsg={j.get('retMsg')} params={params}")
+
+    lst = j.get("result", {}).get("list", [])
+    if not lst:
+        return []
+    return lst[::-1]
+
 
 def compute_stoch_from_klines(kl, period: int, k_smooth: int, d_smooth: int):
     df = pd.DataFrame(kl, columns=["ts","open","high","low","close","volume","turnover"])
