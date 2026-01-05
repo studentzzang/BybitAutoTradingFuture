@@ -1,188 +1,224 @@
-import os, time
-import pandas as pd
+from dotenv import load_dotenv, find_dotenv
+import os, sys, time
+from datetime import datetime
+from typing import Optional
+
 import numpy as np
-from datetime import datetime, timezone
+import pandas as pd
+from pybit.unified_trading import HTTP
 import bybit
-from bybit import (
-    get_kline_http, get_current_price, entry_position, close_position,
-    get_position_size, set_leverage, get_usdt, get_ROE, get_PnL
-)
 
-# ================= 사용자 설정 =================
-SYMBOLS         = ["PUMPFUNUSDT"]
-TIMEFRAMES      = ["15"]
-STOCH_PERIODS   = [9]
-K_SMOOTH_ARR    = [5]
-D_SMOOTH_ARR    = [3]
-TP_ROE_ARR      = [15]
-SL_ROE_ARR      = [15]
-GAP_ARR         = [1]     # K-D 최소 차이(%) 조건
-LEVERAGE_ARR    = [5]
-PCT_ARR         = [50] 
-OVERBOUGHT_ARR  = [80]    # 0이면 기준선 무시
-OVERSOLD_ARR    = [20]    # 0이면 기준선 무시
-WAIT_TIME       = 8      # 반복 주기 (초)
+load_dotenv(find_dotenv(), override=True)
+_api_key = os.getenv("API_KEY")
+_api_secret = os.getenv("API_KEY_SECRET")
+if not _api_key or not _api_secret:
+    print("❌ API_KEY 또는 API_KEY_SECRET을 .env에서 못 찾았습니다.")
+    sys.exit(1)
 
-# ================= 전역상태 =================
-open_positions = {s: None for s in SYMBOLS}   # "LONG"/"SHORT"/None
-entry_px       = {s: None for s in SYMBOLS}
+session = HTTP(api_key=_api_key, api_secret=_api_secret, recv_window=60000, max_retries=0)
 
-# ================= 유틸 =================
-def utc_now_str():
-    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+SYMBOLS = ["PUMPFUNUSDT"]
+INTERVALS = ["1"]
 
-def kline_list_to_df(kl):
-    if not kl:
-        return pd.DataFrame(columns=["ts","open","high","low","close","volume"])
-    if isinstance(kl[0], (list, tuple)):
-        df = pd.DataFrame(kl)
-        if df.shape[1] < 6:
-            raise ValueError(f"kline columns < 6: got {df.shape[1]}")
-        df = df.iloc[:, :6].copy()
-        df.columns = ["ts","open","high","low","close","volume"]
-    elif isinstance(kl[0], dict):
-        df = pd.DataFrame(kl).copy()
-        if "start" in df.columns: df.rename(columns={"start":"ts"}, inplace=True)
-        if "startTime" in df.columns: df.rename(columns={"startTime":"ts"}, inplace=True)
-        need = ["ts","open","high","low","close","volume"]
-        missing = [c for c in need if c not in df.columns]
-        if missing:
-            raise ValueError(f"missing keys in kline dict: {missing}")
-        df = df[need].copy()
-    else:
-        raise TypeError(f"unexpected kline row type: {type(kl[0])}")
-    df["ts"] = pd.to_numeric(df["ts"], errors="coerce")
-    for c in ["open","high","low","close","volume"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df.dropna(subset=["ts","open","high","low","close"], inplace=True)
-    df.sort_values("ts", inplace=True)
+LEVERAGE = "5"
+PCT = 40
+
+MODE = [1]
+TP_ROE = [2.0]
+SL_ROE = [2.0]
+
+STOCH_PERIOD = [14]
+K_SMOOTH = [3]
+D_SMOOTH = [3]
+
+OVERSOLD = [20.0]
+OVERBOUGHT = [80.0]
+STRICT_ZONE = [False]
+
+COOLDOWN_BARS = 0
+SLEEP_SEC = 3
+
+bybit.PCT = PCT
+for s in SYMBOLS:
+    if s not in bybit.SYMBOLS:
+        bybit.SYMBOLS.append(s)
+
+position = {s: None for s in SYMBOLS}   # "long"/"short"/None
+entry_px = {s: None for s in SYMBOLS}
+qty = {s: None for s in SYMBOLS}
+cooldown = {s: 0 for s in SYMBOLS}
+last_closed_ts = {s: None for s in SYMBOLS}
+
+def get_kline_http(symbol: str, interval: str, limit: int = 200):
+    r = session.get_kline(category="linear", symbol=str(symbol).upper(), interval=str(interval), limit=int(limit))
+    return r["result"]["list"][::-1]
+
+def compute_stoch_from_klines(kl, period: int, k_smooth: int, d_smooth: int):
+    df = pd.DataFrame(kl, columns=["ts","open","high","low","close","volume","turnover"])
+    df["ts"] = df["ts"].astype(np.int64)
+    for c in ["open","high","low","close"]:
+        df[c] = df[c].astype(float)
+
+    low_min = df["low"].rolling(window=period).min()
+    high_max = df["high"].rolling(window=period).max()
+    denom = (high_max - low_min).replace(0, np.nan)
+
+    k_raw = 100.0 * (df["close"] - low_min) / denom
+    k = k_raw.rolling(window=k_smooth).mean()
+    d = k.rolling(window=d_smooth).mean()
+
+    df["k"] = k
+    df["d"] = d
+    df.dropna(inplace=True)
     df.reset_index(drop=True, inplace=True)
     return df
 
-def compute_stoch(df, period:int, k_smooth:int, d_smooth:int):
-    low_min  = df["low"].rolling(period).min()
-    high_max = df["high"].rolling(period).max()
-    df["%K_raw"] = 100 * (df["close"] - low_min) / (high_max - low_min + 1e-9)
-    df["%K"] = df["%K_raw"].rolling(k_smooth).mean()
-    df["%D"] = df["%K"].rolling(d_smooth).mean()
-    return df.dropna()
+def bull_cross(k_prev: float, d_prev: float, k_now: float, d_now: float) -> bool:
+    return (k_prev < d_prev) and (k_now > d_now)
 
-def get_stoch(symbol, interval, period, k_smooth, d_smooth):
-    kl = get_kline_http(symbol, interval, limit=50)
-    df = kline_list_to_df(kl)
-    df = compute_stoch(df, period, k_smooth, d_smooth)
-    return float(df["%K"].iloc[-2]), float(df["%D"].iloc[-2]), float(df["%K"].iloc[-1]), float(df["%D"].iloc[-1])
+def bear_cross(k_prev: float, d_prev: float, k_now: float, d_now: float) -> bool:
+    return (k_prev > d_prev) and (k_now < d_now)
 
-# ================= 실행 =================
-print(f"보유 USDT: {get_usdt():.2f}")
+def in_zone_long(k: float, d: float, os_: float, strict: bool) -> bool:
+    return (k <= os_ and d <= os_) if strict else (k <= os_)
 
-for i, s in enumerate(SYMBOLS):
-    set_leverage(s, LEVERAGE_ARR[i])
+def in_zone_short(k: float, d: float, ob_: float, strict: bool) -> bool:
+    return (k >= ob_ and d >= ob_) if strict else (k >= ob_)
 
-while True:
-    try:
-        for i, sym in enumerate(SYMBOLS):
-            tf         = TIMEFRAMES[i]
-            period     = STOCH_PERIODS[i]
-            ks         = K_SMOOTH_ARR[i]
-            ds         = D_SMOOTH_ARR[i]
-            gap        = GAP_ARR[i]
-            tp_roe     = TP_ROE_ARR[i]
-            sl_roe     = SL_ROE_ARR[i]
-            lev        = LEVERAGE_ARR[i]
-            pct        = PCT_ARR[i]
-            overbought = OVERBOUGHT_ARR[i]
-            oversold   = OVERSOLD_ARR[i]
+def close_long(symbol: str):
+    bybit.close_position(symbol, "Sell")
 
-            k_prev, d_prev, k_now, d_now = get_stoch(sym, tf, period, ks, ds)
-            roe = get_ROE(sym)
-            pnl = get_PnL(sym)
-            pos_size = get_position_size(sym)
-            px = get_current_price(sym)
+def close_short(symbol: str):
+    bybit.close_position(symbol, "Buy")
 
-            bybit.PCT = pct
-            flipped = False
-            closed_now = False
+def enter_long(symbol: str, leverage: str):
+    px, q = bybit.entry_position(symbol, "Buy", leverage)
+    if px is not None and q > 0:
+        position[symbol] = "long"
+        entry_px[symbol] = px
+        qty[symbol] = q
+        return True
+    return False
 
-            # === TP/SL 우선 ===
-            if pos_size > 0:
-                if roe >= tp_roe:
-                    print(f"💰 [{sym}] TP 도달 (ROE={roe:.2f}%) → 포지션 종료")
-                    side = "Buy" if open_positions[sym] == "SHORT" else "Sell"
-                    close_position(sym, side)
-                    open_positions[sym] = None
-                    entry_px[sym] = None
-                    closed_now = True
-                    pos_size = 0  # 즉시 재진입 허용
+def enter_short(symbol: str, leverage: str):
+    px, q = bybit.entry_position(symbol, "Sell", leverage)
+    if px is not None and q > 0:
+        position[symbol] = "short"
+        entry_px[symbol] = px
+        qty[symbol] = q
+        return True
+    return False
 
-                elif roe <= -sl_roe:
-                    print(f"🛑 [{sym}] SL 도달 (ROE={roe:.2f}%) → 포지션 종료")
-                    side = "Buy" if open_positions[sym] == "SHORT" else "Sell"
-                    close_position(sym, side)
-                    open_positions[sym] = None
-                    entry_px[sym] = None
-                    closed_now = True
-                    pos_size = 0  # 즉시 재진입 허용
+def start():
+    base = bybit.get_usdt()
+    print(f"🔧 보유금액: {base:.2f} USDT")
+    for s in SYMBOLS:
+        bybit.set_leverage(symbol=s, leverage=LEVERAGE)
 
-                else:
-                    # === 반대 시그널로 뒤집기 ===
-                    if open_positions[sym] == "LONG":
-                        crossed_down = (k_prev > d_prev) and (k_now < d_now)
-                        gap_ok = (k_prev - d_prev) >= gap
-                        if crossed_down and gap_ok:
-                            if overbought == 0 and oversold == 0 or k_now > overbought:
-                                print(f"🔄 [{sym}] LONG → 반대 시그널 → 숏 전환")
-                                close_position(sym, "Sell")
-                                entry_px[sym], qty = entry_position(sym, lev, "Sell")
-                                open_positions[sym] = "SHORT"
-                                flipped = True
+def update():
+    while True:
+        for idx, symbol in enumerate(SYMBOLS):
+            try:
+                interval = INTERVALS[idx]
+                mode = MODE[idx]
 
-                    elif open_positions[sym] == "SHORT":
-                        crossed_up = (k_prev < d_prev) and (k_now > d_now)
-                        gap_ok = (d_prev - k_prev) >= gap
-                        if crossed_up and gap_ok:
-                            if overbought == 0 and oversold == 0 or k_now < oversold:
-                                print(f"🔄 [{sym}] SHORT → 반대 시그널 → 롱 전환")
-                                close_position(sym, "Buy")
-                                entry_px[sym], qty = entry_position(sym, lev, "Buy")
-                                open_positions[sym] = "LONG"
-                                flipped = True
+                tp = TP_ROE[idx] if mode == 1 else None
+                sl = SL_ROE[idx] if mode == 1 else None
 
-            # === 청산 직후 or 무포지션 상태일 때 재진입 ===
-            if pos_size == 0 and not flipped:
-                # 숏 진입 조건
-                if (k_prev > d_prev) and (k_now < d_now) and ((k_prev - d_prev) >= gap):
-                    if overbought == 0 and oversold == 0:
-                        print(f"📉 [{sym}] 숏 진입 | 기준 없음 | K={k_now:.2f} D={d_now:.2f}")
-                        entry_px[sym], qty = entry_position(sym, lev, "Sell")
-                        open_positions[sym] = "SHORT"
-                    elif k_now > overbought:
-                        print(f"📉 [{sym}] 숏 진입 | K={k_now:.2f} D={d_now:.2f}")
-                        entry_px[sym], qty = entry_position(sym, lev, "Sell")
-                        open_positions[sym] = "SHORT"
+                period = STOCH_PERIOD[idx]
+                ks = K_SMOOTH[idx]
+                ds = D_SMOOTH[idx]
+                os_ = OVERSOLD[idx]
+                ob_ = OVERBOUGHT[idx]
+                strict = STRICT_ZONE[idx]
 
-                # 롱 진입 조건
-                elif (k_prev < d_prev) and (k_now > d_now) and ((d_prev - k_prev) >= gap):
-                    if overbought == 0 and oversold == 0:
-                        print(f"📈 [{sym}] 롱 진입 | 기준 없음 | K={k_now:.2f} D={d_now:.2f}")
-                        entry_px[sym], qty = entry_position(sym, lev, "Buy")
-                        open_positions[sym] = "LONG"
-                    elif k_now < oversold:
-                        print(f"📈 [{sym}] 롱 진입 | K={k_now:.2f} D={d_now:.2f}")
-                        entry_px[sym], qty = entry_position(sym, lev, "Buy")
-                        open_positions[sym] = "LONG"
+                kl = get_kline_http(symbol, interval, limit=300)
+                if len(kl) < (period + ks + ds + 10):
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] {symbol} 데이터 부족")
+                    continue
 
-            # === 상태 출력 ===
-            pos_str = open_positions.get(sym) or "-"
-            print(
-                f"[{utc_now_str()}] 🪙{sym} @{tf} "
-                f"💲현재가: {px:.6f}  🚩포지션 {pos_str}  "
-                f"| ST%K/%D({period},{ks},{ds}) = {k_now:.2f}/{d_now:.2f} (prev {k_prev:.2f}/{d_prev:.2f}) "
-                f"| 💎PnL: {pnl:.6f} ⚜️ROE: {roe:.2f}%"
-            )
+                st = compute_stoch_from_klines(kl, period, ks, ds)
+                if len(st) < 5:
+                    continue
 
-        time.sleep(WAIT_TIME)
+                ts_prev = int(st.iloc[-3]["ts"])
+                ts_now = int(st.iloc[-2]["ts"])  # 마지막 '닫힌' 봉으로 보려고 -2 사용
+                if last_closed_ts[symbol] is None:
+                    last_closed_ts[symbol] = ts_now
 
-    except Exception as e:
-        print(f"⚠️ 오류 발생: {e}")
-        time.sleep(10)
+                new_bar = (ts_now != last_closed_ts[symbol])
+                if new_bar:
+                    last_closed_ts[symbol] = ts_now
+                    if cooldown[symbol] > 0:
+                        cooldown[symbol] -= 1
+
+                k_prev = float(st.iloc[-3]["k"])
+                d_prev = float(st.iloc[-3]["d"])
+                k_now = float(st.iloc[-2]["k"])
+                d_now = float(st.iloc[-2]["d"])
+
+                bc = bull_cross(k_prev, d_prev, k_now, d_now)
+                sc = bear_cross(k_prev, d_prev, k_now, d_now)
+
+                ROE = bybit.get_ROE(symbol)
+                PnL = bybit.get_PnL(symbol)
+
+                closed = False
+
+                if position[symbol] == "long":
+                    if mode == 1:
+                        if (tp is not None and ROE >= tp) or (sl is not None and ROE <= -sl):
+                            close_long(symbol)
+                            closed = True
+                    else:
+                        if new_bar and sc:
+                            close_long(symbol)
+                            closed = True
+
+                    if closed:
+                        position[symbol] = None
+                        entry_px[symbol] = None
+                        qty[symbol] = None
+                        cooldown[symbol] = COOLDOWN_BARS
+
+                elif position[symbol] == "short":
+                    if mode == 1:
+                        if (tp is not None and ROE >= tp) or (sl is not None and ROE <= -sl):
+                            close_short(symbol)
+                            closed = True
+                    else:
+                        if new_bar and bc:
+                            close_short(symbol)
+                            closed = True
+
+                    if closed:
+                        position[symbol] = None
+                        entry_px[symbol] = None
+                        qty[symbol] = None
+                        cooldown[symbol] = COOLDOWN_BARS
+
+                if position[symbol] is None and cooldown[symbol] == 0 and new_bar:
+                    if bc and in_zone_long(k_now, d_now, os_, strict):
+                        enter_long(symbol, LEVERAGE)
+
+                    elif sc and in_zone_short(k_now, d_now, ob_, strict):
+                        enter_short(symbol, LEVERAGE)
+
+                print(
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                    f"🪙 {symbol} 🕧 {interval} | 🚩포지션:{position[symbol]} "
+                    f"| K:{k_now:.2f} D:{d_now:.2f} "
+                    f"|💸 PnL:{PnL:.3f} |💎 ROE:{ROE:.2f} "
+                    f"| cooldown:{cooldown[symbol]}"
+                )
+
+            except Exception as e:
+                print(f"[ERROR] {symbol}: {type(e).__name__} {e}")
+                continue
+
+            time.sleep(SLEEP_SEC)
+
+        time.sleep(1)
+
+start()
+update()

@@ -10,16 +10,16 @@ from pybit.unified_trading import HTTP
 # ================= 사용자 설정 =================
 OUT_DIR        = r"D:\Projects\AutoCoinAI\test"   # 결과 저장 폴더
 SYMBOLS        = ["PUMPFUNUSDT"]
-TIMEFRAMES     = ["30","60","120"]                       # Bybit interval: "1","3","5","15","30","60",...,"D","W","M"
+TIMEFRAMES     = [1,5]                       # Bybit interval: "1","3","5","15","30","60",...,"D","W","M"
 
-EMA_FAST_ARR   = [12,20,50]
-EMA_SLOW_ARR   = [26,50,100]
+EMA_FAST_ARR   = [5, 7, 12,20,50]
+EMA_SLOW_ARR   = [9, 14,26,50]
 
-TP_ROE_ARR     = [10,12]                    # ROE% 목표
-SL_ROE_ARR     = [10]                    # ROE% 손절
+TP_ROE_ARR     = [3]                    # ROE% 목표
+SL_ROE_ARR     = [5,10]                    # ROE% 손절
 
 EQUITY         = 100.0                            # 증거금(USDT)
-LEVERAGE       = 5
+LEVERAGE       = 10
 START          = "2025-03-01"                     # 시작일 (UTC)
 END            = None                              # None이면 현재
 MAX_CANDLES    = 20000
