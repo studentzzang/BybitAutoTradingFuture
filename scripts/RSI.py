@@ -12,13 +12,13 @@ if not _api_key or not _api_secret:
     print("❌ API_KEY 또는 API_KEY_SECRET을 .env에서 못 찾았습니다.")
     sys.exit(1)
 
-session = HTTP(api_key=_api_key, api_secret=_api_secret, recv_window=10000, max_retries=0)
+session = HTTP(api_key=_api_key , api_secret=_api_secret, recv_window=10000, max_retries=0)
 
 # ===================== 사용자 설정 =====================
 
-SYMBOLS      = ["PUNPFUNUSDT"]
+SYMBOLS      = ["PUMPFUNUSDT"]
 RSI_PERIODS  = [9]
-INTERVALS    = ["1"]
+INTERVALS    = ["30"]
 
 LONG_SWITCH_RSI  = [28]  # 과매도 기준 (롱 방향)
 SHORT_SWITCH_RSI = [72]  # 과매수 기준 (숏 방향)
@@ -27,11 +27,11 @@ LEVERAGE      = "5"
 PCT           = 40
 COOLDOWN_BARS = 0
 
-DOORSTEP      = 3.0      # 진입: RSI 피크/바닥에서 이만큼 이동 후 진입
+DOORSTEP      = 2.0      # 진입: RSI 피크/바닥에서 이만큼 이동 후 진입
 
-TP_ROE  = [10]           # TP 기준(ROE %)
-SL_ROE  = [15]           # SL 기준(ROE %)
-TP_MODE = [1]            # 1: 모드1 (RSI 반대 과상태 + doorstep 트레일링), 2: 그냥 TP/SL
+TP_ROE  = [15]           # TP 기준(ROE %)
+SL_ROE  = [10]           # SL 기준(ROE %)
+TP_MODE = [2]            # 1: 모드1 (RSI 반대 과상태 + doorstep 트레일링), 2: 그냥 TP/SL
 
 # ===================== 상태 변수 =====================
 
@@ -307,7 +307,7 @@ def update():
                 continue
 
             time.sleep(5)
-        time.sleep(10)
+        time.sleep(3)
 
 
 start()

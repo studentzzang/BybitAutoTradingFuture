@@ -21,24 +21,24 @@ if not _api_key or not _api_secret:
 # =========================
 # CONFIG (배열 유지)
 # =========================
-SYMBOLS = ["PUMPFUNUSDT"]
-INTERVALS = ["15"]
+SYMBOLS = ["FARTCOINUSDT"]
+INTERVALS = ["5"]
 CATEGORY = ["linear"]          # 중요: v5 kline category (linear/inverse/spot/option)
 
 LEVERAGE = "10"
-PCT = 30
+PCT = 50
 bybit.PCT = PCT
 
 MODE = [1]                     # 1: TP/SL by ROE, 2: opposite cross exit
-TP_ROE = [3.0]                 # mode1 only
-SL_ROE = [8.0]                 # mode1 only
+TP_ROE = [2.5]                 # mode1 only
+SL_ROE = [15]                 # mode1 only
 
-STOCH_PERIOD = [14]
-K_SMOOTH = [3]
+STOCH_PERIOD = [5]
+K_SMOOTH = [5]
 D_SMOOTH = [3]
 
-OVERSOLD = [20.0]
-OVERBOUGHT = [80.0]
+OVERSOLD = [25.0]
+OVERBOUGHT = [75.0]
 STRICT_ZONE = [False]
 
 COOLDOWN_BARS = 0
