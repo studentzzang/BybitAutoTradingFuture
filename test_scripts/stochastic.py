@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from pybit.unified_trading import HTTP
 
+<<<<<<< Updated upstream
 # =========================
 # Stochastic 백테스트 CSV 메이커 (RSI.py 스타일 복리 누적 + TP/SL 고정 반영)
 # - 진입: Stoch K/D 크로스 + (strict_zone면 과매도/과매수 구간에서 발생한 크로스만)
@@ -23,13 +24,34 @@ TF_ARR = [5,15,30]
 MODE_ARR = [1]                 # 1=TP/SL, 2=반대크로스청산
 LEVERAGE_ARR = [5]
 EQUITY_ARR = [100.0]
+=======
+# ================= 사용자 설정 =================
+OUT_DIR        = r"d:\Projects\AutoCoinAI\test"
+SYMBOLS        = ["1000PEPEUSDT","DOGEUSDT"]
+TIMEFRAMES     = ["5", "15","30"]
+
+STOCH_PERIODS  = [5,9,14]
+K_SMOOTH_ARR   = [3,5]
+D_SMOOTH_ARR   = [3,5]
+N_GAP_LIST     = [0, 1, 3, 5]   # % 차이 (K-D) 최소 갭 조건
+>>>>>>> Stashed changes
 
 # 날짜 범위(UTC 기준 YYYY-MM-DD)
 START = "2026-01-12"
 END   = "2026-02-12"
 
+<<<<<<< Updated upstream
 # 캔들 최대 수집
 MAX_CANDLES = 40000
+=======
+EQUITY         = 100.0
+LEVERAGE       = 5
+START          = "2025-01-01"
+END            = None
+MAX_CANDLES    = 10000
+SLEEP_PER_REQ  = 0.12
+MAX_RETRY      = 3
+>>>>>>> Stashed changes
 
 # 스토캐스틱 파라미터
 PERIOD_ARR = [14,9,5]
