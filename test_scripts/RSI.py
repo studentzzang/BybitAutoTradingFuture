@@ -8,30 +8,30 @@ import numpy as np
 from pybit.unified_trading import HTTP
 
 # ====== 사용자 설정 변수 ======
-SYMBOL = ["ETHUSDT"]
-LEVERAGE = 10
-TIMEFRAME = [1, 3, 5]
-RSI_PERIOD = [5, 7, 9, 12, 15]
+SYMBOL = ["PUMPFUNUSDT", "FARTCOINUSDT"]
+LEVERAGE = 3
+TIMEFRAME = [3,5, 15, 30]
+RSI_PERIOD = [5, 7, 9, 12]
 EQUITY = 100.0
-START = "2025-09-01"
-END = "2025-12-28"
+START = "2025-12-30"
+END = "2026-02-08"
 OUT_DIR = "test"
 
-MAX_CANDLES = 40000
+MAX_CANDLES = 30000
 
 # RSI 트리거 값 (원본 설정값)
-OPEN_SHORT_RSI  = 72.0   # 숏 진입 기준
-OPEN_LONG_RSI   = 28.0   # 롱 진입 기준
+OPEN_SHORT_RSI = 72.0   # 숏 진입 기준
+OPEN_LONG_RSI = 28.0    # 롱 진입 기준
 CLOSE_SHORT_RSI = 70.0
-CLOSE_LONG_RSI  = 30.0
+CLOSE_LONG_RSI = 30.0
 
 # DOORSTEP 밴드 (원본 로직 전용)
 DOORSTEP = 3.0
 
 # ====== TP / SL 배열 ======
-TP_ROE_ARR   = [3]
-SL_ROE_ARR   = [10,20]
-TP_MODE_ARR  = [2]   # 1 = DOORSTEP + TP/SL, 2 = TP/SL만 의존
+TP_ROE_ARR = [3, 5, 10]
+SL_ROE_ARR = [3, 5, 10]
+TP_MODE_ARR = [1, 2]   # 1 = DOORSTEP(청산) + 진입=즉시, 2 = 진입=재돌파(진입방지) + 청산=TP/SL
 # ==========================
 
 session = HTTP()
@@ -54,7 +54,13 @@ def parse_date(s: Optional[str]) -> Optional[int]:
 def bybit_interval(tf: str) -> str:
     return str(tf)
 
-def fetch_ohlcv_10000(symbol: str, tf: str, start_ms=None, end_ms=None, max_candles: int = MAX_CANDLES) -> pd.DataFrame:
+def fetch_ohlcv_10000(
+    symbol: str,
+    tf: str,
+    start_ms=None,
+    end_ms=None,
+    max_candles: int = MAX_CANDLES
+) -> pd.DataFrame:
     interval = bybit_interval(tf)
     if end_ms is None:
         end_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
@@ -65,8 +71,11 @@ def fetch_ohlcv_10000(symbol: str, tf: str, start_ms=None, end_ms=None, max_cand
         for attempt in range(3):
             try:
                 r = session.get_kline(
-                    category="linear", symbol=symbol, interval=interval,
-                    end=end_ms, limit=1000
+                    category="linear",
+                    symbol=symbol,
+                    interval=interval,
+                    end=end_ms,
+                    limit=1000
                 )
                 if r.get("retCode") == 0:
                     resp = r
@@ -81,12 +90,21 @@ def fetch_ohlcv_10000(symbol: str, tf: str, start_ms=None, end_ms=None, max_cand
         lst = resp["result"]["list"]
         if not lst:
             break
+        
+        batch_min_ts = None
 
         for it in lst:
-            ts = int(it[0]); o, h, l, c, v = map(float, it[1:6])
+            ts = int(it[0])
+            o, h, l, c, v = map(float, it[1:6])
             rows.append((ts, o, h, l, c, v))
+            if batch_min_ts is None or ts < batch_min_ts:
+                batch_min_ts = ts
 
         end_ms = min(int(x[0]) for x in lst) - 1
+
+        if start_ms is not None and batch_min_ts is not None and batch_min_ts <= start_ms:
+            break
+
         if len(lst) < 1000:
             break
         time.sleep(0.12)
@@ -94,7 +112,16 @@ def fetch_ohlcv_10000(symbol: str, tf: str, start_ms=None, end_ms=None, max_cand
     df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"]).drop_duplicates("ts")
     df.sort_values("ts", inplace=True)
     df.reset_index(drop=True, inplace=True)
+
+    if start_ms is not None:
+        df = df[df["ts"] >= start_ms]
+        df.reset_index(drop=True, inplace=True)
+    if end_ms is not None:
+
+        pass
+
     return df.head(max_candles)
+
 
 def compute_rsi(close: pd.Series, period: int) -> pd.Series:
     delta = close.diff()
@@ -103,12 +130,22 @@ def compute_rsi(close: pd.Series, period: int) -> pd.Series:
     roll_up = up.ewm(alpha=1/period, adjust=False).mean()
     roll_down = down.ewm(alpha=1/period, adjust=False).mean()
     rs = roll_up / (roll_down + 1e-12)
-    return 100 - (100/(1+rs))
+    return 100 - (100 / (1 + rs))
 
 # ---------- 시뮬레이션 ----------
-def run(symbol: str, tf: str, rsi_period: int, leverage: float, equity: float,
-        start: Optional[str], end: Optional[str], out_dir: str,
-        tp_roe: float, sl_roe: float, tp_mode: int) -> str:
+def run(
+    symbol: str,
+    tf: str,
+    rsi_period: int,
+    leverage: float,
+    equity: float,
+    start: Optional[str],
+    end: Optional[str],
+    out_dir: str,
+    tp_roe: float,
+    sl_roe: float,
+    tp_mode: int
+) -> str:
 
     start_ms = parse_date(start)
     end_ms = parse_date(end)
@@ -137,6 +174,8 @@ def run(symbol: str, tf: str, rsi_period: int, leverage: float, equity: float,
     qty = None
     init_margin = None  # 진입 당시 원금(마진) 기록용
 
+    prev_rsi = None  # 직전 RSI (MODE2 재돌파 진입용)
+
     for i in range(len(ohlc)):
         ts = int(ohlc.loc[i, "ts"]) // 1000
         dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -149,20 +188,42 @@ def run(symbol: str, tf: str, rsi_period: int, leverage: float, equity: float,
 
         # === 진입 ===
         if position is None and rv is not None:
-            if rv >= OPEN_SHORT_RSI:
-                position = "SHORT"
-                entry_px = px
-                notional = current_equity * leverage
-                qty = notional / entry_px
-                init_margin = current_equity
-                remark = "SHORT 진입"
-            elif rv <= OPEN_LONG_RSI:
-                position = "LONG"
-                entry_px = px
-                notional = current_equity * leverage
-                qty = notional / entry_px
-                init_margin = current_equity
-                remark = "LONG 진입"
+            # MODE 1: 기존과 동일 (과매수/과매도 값에 닿으면 즉시 진입)
+            if tp_mode == 1:
+                if rv >= OPEN_SHORT_RSI:
+                    position = "SHORT"
+                    entry_px = px
+                    notional = current_equity * leverage
+                    qty = notional / entry_px
+                    init_margin = current_equity
+                    remark = "SHORT 진입"
+                elif rv <= OPEN_LONG_RSI:
+                    position = "LONG"
+                    entry_px = px
+                    notional = current_equity * leverage
+                    qty = notional / entry_px
+                    init_margin = current_equity
+                    remark = "LONG 진입"
+
+            # MODE 2: DOORSTEP 미사용. "재돌파(되돌림)"로만 진입
+            # - 너무 과매수/과매도일 때 바로 진입하는 것을 방지
+            # - SHORT: (이전 RSI > OPEN_SHORT_RSI)였다가 (현재 RSI <= OPEN_SHORT_RSI)로 내려오면 진입
+            # - LONG : (이전 RSI < OPEN_LONG_RSI)였다가 (현재 RSI >= OPEN_LONG_RSI)로 올라오면 진입
+            elif tp_mode == 2 and prev_rsi is not None:
+                if prev_rsi > OPEN_SHORT_RSI and rv <= OPEN_SHORT_RSI:
+                    position = "SHORT"
+                    entry_px = px
+                    notional = current_equity * leverage
+                    qty = notional / entry_px
+                    init_margin = current_equity
+                    remark = "SHORT 진입 (RE-CROSS)"
+                elif prev_rsi < OPEN_LONG_RSI and rv >= OPEN_LONG_RSI:
+                    position = "LONG"
+                    entry_px = px
+                    notional = current_equity * leverage
+                    qty = notional / entry_px
+                    init_margin = current_equity
+                    remark = "LONG 진입 (RE-CROSS)"
 
         # === 보유 중 ===
         elif position is not None and rv is not None:
@@ -216,23 +277,23 @@ def run(symbol: str, tf: str, rsi_period: int, leverage: float, equity: float,
                         remark = f"close SHORT (SL {roe:.1f}%)"
                         closed = True
 
-            # === 청산 처리 + "프롬프트 그대로" 원금 반영 ===
+            # === 청산 처리: pnl/roe 크기 무시하고 "부호만" 보고 TP/SL로 강제 반영 ===
             if closed:
                 equity_before = current_equity
 
-                # ✅ 원래 결과(roe/unreal)의 "부호"만 본다
-                is_win = (unreal >= 0)  # 또는 (roe >= 0)도 가능. 둘 다 동일 맥락.
+                # ✅ 승/패는 기존 unreal(또는 roe) 부호로만 판단
+                is_win = (unreal >= 0)
 
-                # ✅ 기록/정산은 TP/SL로 대체
+                # ✅ 실제 pnl이 얼마든, TP/SL 퍼센트로 강제 치환
                 if is_win:
-                    fixed_roe = float(tp_roe)
+                    fixed_roe = float(tp_roe)          # 예: +15%
                 else:
-                    fixed_roe = -float(sl_roe)
+                    fixed_roe = -float(sl_roe)         # 예: -10%
 
                 fixed_pnl = equity_before * (fixed_roe / 100.0)
                 current_equity = equity_before + fixed_pnl
 
-                # CSV에는 "고정 반영된 결과"를 찍는다
+                # CSV에는 "고정 반영된 결과"만 기록 (열 이름/구조 유지)
                 log.append([
                     dt, symbol, tf,
                     px, rv,
@@ -248,12 +309,17 @@ def run(symbol: str, tf: str, rsi_period: int, leverage: float, equity: float,
                 qty = None
                 init_margin = None
 
+        # 다음 캔들을 위한 prev_rsi 갱신 (NaN이면 갱신 안 함)
+        if rv is not None:
+            prev_rsi = rv
+
     if not log:
         return ""
 
     df = pd.DataFrame(log, columns=cols)
     os.makedirs(out_dir, exist_ok=True)
 
+    # ✅ 파일명/경로 형식 절대 변경 X
     fname = f"{symbol}_{tf}_R{rsi_period}_TP{tp_roe}_SL{sl_roe}_M{tp_mode}.csv"
     path = os.path.join(out_dir, fname)
     df.to_csv(path, index=False, encoding="utf-8-sig")
@@ -261,7 +327,7 @@ def run(symbol: str, tf: str, rsi_period: int, leverage: float, equity: float,
 
 # ---------- 실행 ----------
 if __name__ == "__main__":
-    print("--- RSI 원본 로직 백테스팅 시작 (FIXED TP/SL 원금 누적 반영) ---")
+    print("--- RSI 원본 로직 백테스팅 시작 (청산 시 TP/SL 퍼센트로 강제 치환, 원금 누적 반영) ---")
     for s in _as_list(SYMBOL):
         for tf in _as_list(TIMEFRAME):
             for rp in _as_list(RSI_PERIOD):
