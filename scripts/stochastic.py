@@ -19,7 +19,7 @@ if not _api_key or not _api_secret:
 SYMBOLS   = ["PUMPFUNUSDT"]
 
 # 봉 간격 (Bybit interval string: "1","3","5","15","30","60"...)
-INTERVALS = ["5"]
+INTERVALS = ["30"]
 
 # Stochastic 파라미터 (심볼별로 1:1 매칭)
 STOCH_PERIODS = [14]   # %K period
@@ -27,13 +27,13 @@ K_SMOOTHS     = [3]    # %K smoothing
 D_SMOOTHS     = [3]    # %D smoothing
 
 # 존(심볼별)
-OVERSOLD   = [25.0]
-OVERBOUGHT = [75.0]
+OVERSOLD   = [20.0]
+OVERBOUGHT = [80.0]
 
 # strict_zone=True면
 #   LONG: K,D 둘다 OVERSOLD 이하에서 발생한 골든크로스만 진입
 #   SHORT: K,D 둘다 OVERBOUGHT 이상에서 발생한 데드크로스만 진입
-STRICT_ZONE = [False]
+STRICT_ZONE = [True]
 
 # 거래 설정
 LEVERAGE      = "5"
@@ -44,8 +44,8 @@ COOLDOWN_BARS = 0
 DOORSTEP      = 2.0
 
 # TP/SL (ROE %), 심볼별
-TP_ROE  = [8]
-SL_ROE  = [4]
+TP_ROE  = [15]
+SL_ROE  = [10]
 
 # TP_MODE
 # 1: 모드1 (TP 돌파 후 조건 만족 시 ROE 피크 트레일링으로 익절)
@@ -100,9 +100,6 @@ def get_stoch_last2(symbol, interval, period=14, k_smooth=3, d_smooth=3, limit=2
     (k_prev, d_prev, k_now, d_now) 반환
     """
     kl = bybit.get_kline_http(symbol, interval, limit=limit)  # oldest -> newest (bybit.py가 reverse 해줌)
-    # Bybit는 진행 중인(미완성) 캔들을 포함해 줄 때가 있어, 신호 왜곡 방지 위해 마지막 1개는 제외
-    if kl and len(kl) >= 2:
-        kl = kl[:-1]
     if not kl or len(kl) < (period + k_smooth + d_smooth + 5):
         return None
 
@@ -216,17 +213,17 @@ def update():
                 bear_cross = (k_prev > d_prev) and (k_now < d_now)
 
                 # ===== 1) 포지션 없음 & 쿨다운 끝 → 진입 =====
-                if new_bar and position[symbol] is None and cooldown_bars[symbol] == 0:
+                if position[symbol] is None and cooldown_bars[symbol] == 0:
                     # LONG: 골든크로스 + (strict_zone면 oversold에서만)
-                    if bull_cross and in_zone(k_prev, d_prev, osd, strict, is_oversold=True):
+                    if bull_cross and in_zone(k_now, d_now, osd, strict, is_oversold=True):
                         px, q = bybit.entry_position(symbol, "Buy", LEVERAGE)
                         if q > 0 and px is not None:
                             enter_long(symbol, px, q, LEVERAGE)
                             cooldown_bars[symbol] = COOLDOWN_BARS
 
                     # SHORT: 데드크로스 + (strict_zone면 overbought에서만)
-                    if new_bar and position[symbol] is None and cooldown_bars[symbol] == 0:
-                        if bear_cross and in_zone(k_prev, d_prev, obd, strict, is_oversold=False):
+                    if position[symbol] is None and cooldown_bars[symbol] == 0:
+                        if bear_cross and in_zone(k_now, d_now, obd, strict, is_oversold=False):
                             px, q = bybit.entry_position(symbol, "Sell", LEVERAGE)
                             if q > 0 and px is not None:
                                 enter_short(symbol, px, q, LEVERAGE)
