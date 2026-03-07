@@ -8,13 +8,13 @@ import numpy as np
 from pybit.unified_trading import HTTP
 
 # ====== 사용자 설정 변수 ======
-SYMBOL = ["ETHUSDT"]
-LEVERAGE = 10
-TIMEFRAME = [1, 3, 5]
-RSI_PERIOD = [5, 7, 9, 12, 15]
+SYMBOL = ["PUMPFUNUSDT"]
+LEVERAGE = 3
+TIMEFRAME = [15,30]
+RSI_PERIOD = [7,9,12]
 EQUITY = 100.0
-START = "2025-09-01"
-END = "2025-12-28"
+START = "2026-02-01"
+END = "2026-03-03"
 OUT_DIR = "test"
 
 MAX_CANDLES = 40000
@@ -29,9 +29,9 @@ CLOSE_LONG_RSI  = 30.0
 DOORSTEP = 3.0
 
 # ====== TP / SL 배열 ======
-TP_ROE_ARR   = [3]
-SL_ROE_ARR   = [10,20]
-TP_MODE_ARR  = [2]   # 1 = DOORSTEP + TP/SL, 2 = TP/SL만 의존
+TP_ROE_ARR   = [3,5,7]
+SL_ROE_ARR   = [3,5,7]
+TP_MODE_ARR  = [1,2]   # 1 = DOORSTEP + TP/SL, 2 = TP/SL만 의존
 # ==========================
 
 session = HTTP()
