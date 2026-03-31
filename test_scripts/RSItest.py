@@ -7,13 +7,13 @@ import pandas as pd
 import numpy as np
 from pybit.unified_trading import HTTP
 
-SYMBOL = ["PUMPFUNUSDT", "FARTCOINUSDT"]
+SYMBOL = ["PUMPFUNUSDT", "FARTUSDT","XRPUSDT"]
 LEVERAGE = 5
 TIMEFRAME = [5,15,30,60]
 RSI_PERIOD = [5, 9, 14]
 EQUITY = 100.0
-START = "2026-02-01"
-END = "2026-03-07"
+START = "2026-03-01"
+END = "2026-03-31"
 OUT_DIR = "test"
 
 MAX_CANDLES = 20000
