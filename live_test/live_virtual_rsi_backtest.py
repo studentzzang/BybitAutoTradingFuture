@@ -19,6 +19,28 @@ from pybit.unified_trading import HTTP
 CASES = [
     {
         "symbol": "PUMPFUNUSDT",
+        "interval": "5",
+        "rsi_period": 12,
+        "long_switch_rsi": 28,
+        "short_switch_rsi": 72,
+        "close_long_rsi": 30,
+        "close_short_rsi": 70,
+        "mode": 1,
+        "sl_roe": 10,
+    },
+    {
+        "symbol": "PUMPFUNUSDT",
+        "interval": "15",
+        "rsi_period":5,
+        "long_switch_rsi": 28,
+        "short_switch_rsi": 72,
+        "close_long_rsi": 30,
+        "close_short_rsi": 70,
+        "mode": 1,
+        "sl_roe": 10,
+    },
+    {
+        "symbol": "PUMPFUNUSDT",
         "interval": "15",
         "rsi_period": 7,
         "long_switch_rsi": 28,
@@ -30,8 +52,19 @@ CASES = [
     },
     {
         "symbol": "PUMPFUNUSDT",
-        "interval": "15",
-        "rsi_period": 14,
+        "interval": "30",
+        "rsi_period": 5,
+        "long_switch_rsi": 28,
+        "short_switch_rsi": 72,
+        "close_long_rsi": 30,
+        "close_short_rsi": 70,
+        "mode": 1,
+        "sl_roe": 10,
+    },
+    {
+        "symbol": "PUMPFUNUSDT",
+        "interval": "30",
+        "rsi_period": 7,
         "long_switch_rsi": 28,
         "short_switch_rsi": 72,
         "close_long_rsi": 30,
@@ -50,22 +83,11 @@ CASES = [
         "mode": 1,
         "sl_roe": 10,
     },
-    {
-        "symbol": "FARTCOINUSDT",
-        "interval": "30",
-        "rsi_period": 9,
-        "long_switch_rsi": 28,
-        "short_switch_rsi": 72,
-        "close_long_rsi": 30,
-        "close_short_rsi": 70,
-        "mode": 1,
-        "sl_roe": 10,
-    },
 ]
 
 INITIAL_CASH = 100.0          # 각 케이스 시작 자산
 LEVERAGE = 5                  # RSI.py와 동일
-PCT = 40                      # 진입 시 사용할 증거금 비율(자산의 40%)
+PCT = 80                      # 진입 시 사용할 증거금 비율(자산의 40%)
 ENTRY_BAND = 4                # RSI.py와 동일
 COOLDOWN_BARS = 0             # RSI.py와 동일
 POLL_SECONDS = 5              # 케이스별 폴링 간격
