@@ -15,15 +15,15 @@ if not _api_key or not _api_secret:
 
 session = HTTP(api_key=_api_key, api_secret=_api_secret, recv_window=10000, max_retries=0)
 
-SYMBOLS = ["FARTCOINUSDT", "PUNPFUNUSDT"]
-RSI_PERIODS = [7, 7]
+SYMBOLS = ["PUNPFUNUSDT"]
+RSI_PERIODS = [5]
 INTERVALS = ["30", "30"]
 
 LONG_SWITCH_RSI = [28, 28]
 SHORT_SWITCH_RSI = [72, 72]
 
 LEVERAGE = "5"
-PCT = 40
+PCT = 80
 ENTRY_BAND = 4
 COOLDOWN_BARS = 0
 
